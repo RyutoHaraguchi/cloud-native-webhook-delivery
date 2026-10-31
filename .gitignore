@@ -1,0 +1,27 @@
+# Go
+/bin/
+/cmd/*/bootstrap
+*.test
+*.out
+*.log
+
+# 環境変数
+.env
+.env.*
+!.env.example
+
+# Terraform（.terraform.lock.hcl はコミットする）
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+crash.log
+*.tfplan
+
+# エージェントの個人設定
+.claude/settings.local.json
+
+# OS
+.DS_Store
