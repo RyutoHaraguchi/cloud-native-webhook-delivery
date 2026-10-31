@@ -51,9 +51,9 @@ func TestDeliveryStatusValues(t *testing.T) {
 		DeliveryStatusCanceled:  "canceled",
 	}
 
-	for statusName, valueName := range statuses {
-		if string(statusName) != valueName {
-			t.Errorf("statusName = %q, valueName = %q", statusName, valueName)
+	for status, want := range statuses {
+		if string(status) != want {
+			t.Errorf("status = %q, want %q", status, want)
 		}
 	}
 }

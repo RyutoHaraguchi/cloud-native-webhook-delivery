@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestNextRetryDelay(t *testing.T) {
+func TestNextDelay(t *testing.T) {
 	// 0.5 のときジッターは 0 になるので、間隔そのものを確かめられる
 	const noJitter = 0.5
 
@@ -39,7 +39,7 @@ func TestNextRetryDelay(t *testing.T) {
 	}
 }
 
-func TestNextRetryDelayJitter(t *testing.T) {
+func TestNextDelayJitter(t *testing.T) {
 	tests := []struct {
 		name   string
 		random float64

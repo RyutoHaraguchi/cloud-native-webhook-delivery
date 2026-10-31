@@ -1,15 +1,18 @@
 package core
 
-// AttemptOutcomeは1回の送信の結果を表す。
+// AttemptOutcome は 1 回の送信の結果を表す。
 type AttemptOutcome string
 
 const (
-	AttemptOutcomeDelivered        AttemptOutcome = "delivered"
+	AttemptOutcomeDelivered AttemptOutcome = "delivered"
+	// AttemptOutcomeRetryableFailure は再送してよい失敗を表す。再送するかは送信回数で決まる。
 	AttemptOutcomeRetryableFailure AttemptOutcome = "retryable_failure"
-	AttemptOutcomeGone             AttemptOutcome = "gone"
+	// AttemptOutcomeGone は送信先が 410 を返したことを表す。再送しない。
+	AttemptOutcomeGone AttemptOutcome = "gone"
 )
 
 // ClassifyStatusCode は HTTP ステータスコードから送信結果を判定する。
+// 2xx と 410 以外はすべて再送してよい失敗とする。
 func ClassifyStatusCode(code int) AttemptOutcome {
 	switch {
 	case 200 <= code && code <= 299:
