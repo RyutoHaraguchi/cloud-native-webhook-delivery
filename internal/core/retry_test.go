@@ -61,7 +61,7 @@ func TestNextRetryDelayJitter(t *testing.T) {
 }
 
 func TestRetryScheduleCanBeReplaced(t *testing.T) {
-	schedule := RetrySchedule{0, time.Second}
+	schedule := RetrySchedule{time.Second}
 	const noJitter = 0.5
 
 	if got, ok := schedule.NextDelay(1, noJitter); !ok || got != time.Second {
