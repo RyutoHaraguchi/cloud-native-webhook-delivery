@@ -4,23 +4,23 @@ import "testing"
 
 func TestCanTransition(t *testing.T) {
 	all := []DeliveryStatus{
-		StatusPending,
-		StatusRetrying,
-		StatusDelivered,
-		StatusFailed,
-		StatusCanceled,
+		DeliveryStatusPending,
+		DeliveryStatusRetrying,
+		DeliveryStatusDelivered,
+		DeliveryStatusFailed,
+		DeliveryStatusCanceled,
 	}
 
 	allowed := map[[2]DeliveryStatus]bool{
-		{StatusPending, StatusDelivered}:  true,
-		{StatusPending, StatusRetrying}:   true,
-		{StatusPending, StatusFailed}:     true,
-		{StatusPending, StatusCanceled}:   true,
-		{StatusRetrying, StatusDelivered}: true,
-		{StatusRetrying, StatusRetrying}:  true,
-		{StatusRetrying, StatusFailed}:    true,
-		{StatusRetrying, StatusCanceled}:  true,
-		{StatusFailed, StatusPending}:     true,
+		{DeliveryStatusPending, DeliveryStatusDelivered}:  true,
+		{DeliveryStatusPending, DeliveryStatusRetrying}:   true,
+		{DeliveryStatusPending, DeliveryStatusFailed}:     true,
+		{DeliveryStatusPending, DeliveryStatusCanceled}:   true,
+		{DeliveryStatusRetrying, DeliveryStatusDelivered}: true,
+		{DeliveryStatusRetrying, DeliveryStatusRetrying}:  true,
+		{DeliveryStatusRetrying, DeliveryStatusFailed}:    true,
+		{DeliveryStatusRetrying, DeliveryStatusCanceled}:  true,
+		{DeliveryStatusFailed, DeliveryStatusPending}:     true,
 	}
 
 	for _, from := range all {
@@ -34,10 +34,26 @@ func TestCanTransition(t *testing.T) {
 }
 
 func TestCanTransitionUnknownStatus(t *testing.T) {
-	if CanTransition("unknown", StatusPending) {
+	if CanTransition("unknown", DeliveryStatusPending) {
 		t.Error("未知の状態からの遷移を許可してはいけない")
 	}
-	if CanTransition(StatusPending, "unknown") {
+	if CanTransition(DeliveryStatusPending, "unknown") {
 		t.Error("未知の状態への遷移を許可してはいけない")
+	}
+}
+
+func TestDeliveryStatusValues(t *testing.T) {
+	statuses := map[DeliveryStatus]string{
+		DeliveryStatusPending:   "pending",
+		DeliveryStatusRetrying:  "retrying",
+		DeliveryStatusDelivered: "delivered",
+		DeliveryStatusFailed:    "failed",
+		DeliveryStatusCanceled:  "canceled",
+	}
+
+	for statusName, valueName := range statuses {
+		if string(statusName) != valueName {
+			t.Errorf("statusName = %q, valueName = %q", statusName, valueName)
+		}
 	}
 }
