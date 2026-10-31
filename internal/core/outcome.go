@@ -4,9 +4,9 @@ package core
 type AttemptOutcome string
 
 const (
-	AttemptOutcomeDelivered AttemptOutcome = "delivered"
-	AttemptOutcomeRetry     AttemptOutcome = "retry"
-	AttemptOutcomeGone      AttemptOutcome = "gone"
+	AttemptOutcomeDelivered        AttemptOutcome = "delivered"
+	AttemptOutcomeRetryableFailure AttemptOutcome = "retryable_failure"
+	AttemptOutcomeGone             AttemptOutcome = "gone"
 )
 
 // ClassifyStatusCode は HTTP ステータスコードから送信結果を判定する。
@@ -17,6 +17,6 @@ func ClassifyStatusCode(code int) AttemptOutcome {
 	case code == 410:
 		return AttemptOutcomeGone
 	default:
-		return AttemptOutcomeRetry
+		return AttemptOutcomeRetryableFailure
 	}
 }
