@@ -9,6 +9,8 @@ const (
 	AttemptOutcomeRetryableFailure AttemptOutcome = "retryable_failure"
 	// AttemptOutcomeGone は送信先が 410 を返したことを表す。再送しない。
 	AttemptOutcomeGone AttemptOutcome = "gone"
+	// AttemptOutcomeSSRFBlocked は SSRF 検査で送信を止めたことを表す。再送しない。
+	AttemptOutcomeSSRFBlocked AttemptOutcome = "ssrf_blocked"
 )
 
 // ClassifyStatusCode は HTTP ステータスコードから送信結果を判定する。
