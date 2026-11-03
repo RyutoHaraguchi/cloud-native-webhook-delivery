@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    # 公開直後に乗っ取られたリリースを取り込まないよう、7 日経ってから更新する（github-actions も同様）。
+    # cooldown が遅らせるのはバージョン更新だけで、セキュリティ更新は待たずに届く
+    cooldown:
+      default-days: 7
+    groups:
+      gomod:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
