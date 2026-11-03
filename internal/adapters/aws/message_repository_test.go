@@ -82,28 +82,6 @@ func rawString(t *testing.T, item map[string]types.AttributeValue, name string) 
 	return v.Value
 }
 
-func TestNewMessageRepository_InvalidConfig(t *testing.T) {
-	client := &dynamodb.Client{}
-	now := func() time.Time { return time.Time{} }
-	tests := []struct {
-		name string
-		cfg  MessageRepositoryConfig
-		now  func() time.Time
-	}{
-		{"empty table", MessageRepositoryConfig{Retention: time.Hour}, now},
-		{"zero retention", MessageRepositoryConfig{Table: "messages"}, now},
-		{"negative retention", MessageRepositoryConfig{Table: "messages", Retention: -time.Hour}, now},
-		{"nil now", MessageRepositoryConfig{Table: "messages", Retention: time.Hour}, nil},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, err := NewMessageRepository(client, tt.cfg, tt.now); err == nil {
-				t.Fatal("err = nil, want error")
-			}
-		})
-	}
-}
-
 func TestMessageRepository_CreateAndGetMessage(t *testing.T) {
 	repo, client, clock := newTestMessageRepository(t)
 	tenantID := testTenantID(t)

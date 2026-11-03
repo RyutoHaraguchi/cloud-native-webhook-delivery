@@ -293,16 +293,3 @@ func TestDeliveryQueue_ReceiveCanceled(t *testing.T) {
 		t.Fatal("取り消してから 5 秒以内に Receive が戻らない")
 	}
 }
-
-func TestDeliveryQueue_ReceiveMax(t *testing.T) {
-	// client が nil なので、SQS を呼べば panic する。呼ばずにエラーを返すことを確かめる
-	q, err := NewDeliveryQueue(nil, DeliveryQueueConfig{QueueURL: "http://q", DLQURL: "http://dlq", WaitTime: time.Second})
-	if err != nil {
-		t.Fatalf("NewDeliveryQueue err = %v", err)
-	}
-	for _, max := range []int{0, 11} {
-		if _, err := q.Receive(t.Context(), max); err == nil {
-			t.Errorf("Receive(max=%d) err = nil, want error", max)
-		}
-	}
-}

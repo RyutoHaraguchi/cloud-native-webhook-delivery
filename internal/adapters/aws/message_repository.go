@@ -124,7 +124,10 @@ func (r *MessageRepository) putIfAbsent(ctx context.Context, key, attrs map[stri
 	return err
 }
 
-// CreateMessage はメッセージを保存する。同じ ID のメッセージが既にあれば ErrConflict を返す
+// CreateMessage はメッセージを保存する。同じ ID のメッセージが既にあれば ErrConflict を返す。
+// 書き込みが成功して応答だけが失われ、SDK が再試行すると、再試行が条件で失敗して
+// 書き込み済みでも ErrConflict を返すことがある。呼び出し側は ErrConflict を未書き込みの証拠とせず、
+// 状態を読み直して判断する
 func (r *MessageRepository) CreateMessage(ctx context.Context, m core.Message) error {
 	if err := m.Validate(); err != nil {
 		return fmt.Errorf("create message: %w", err)
@@ -274,7 +277,10 @@ func decodeDelivery(endpointID string, item map[string]types.AttributeValue) (co
 }
 
 // SaveDelivery は prev の Status と AttemptCount が保存値と一致するときだけ next を書く。
-// 一致しない、または項目がなければ ErrConflict、不正な鍵は ErrInvalidKey を返す
+// 一致しない、または項目がなければ ErrConflict、不正な鍵は ErrInvalidKey を返す。
+// 書き込みが成功して応答だけが失われ、SDK が再試行すると、再試行が条件で失敗して
+// 書き込み済みでも ErrConflict を返すことがある。呼び出し側は ErrConflict を未書き込みの証拠とせず、
+// 状態を読み直して判断する
 func (r *MessageRepository) SaveDelivery(ctx context.Context, key core.DeliveryKey, prev, next core.Delivery) error {
 	if err := key.Validate(); err != nil {
 		return fmt.Errorf("save delivery: %w", err)
