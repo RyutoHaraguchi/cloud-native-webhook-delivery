@@ -4,6 +4,8 @@ go 1.27.3
 
 tool golang.org/x/vuln/cmd/govulncheck
 
+require github.com/standard-webhooks/standard-webhooks/libraries v0.0.1
+
 require (
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect

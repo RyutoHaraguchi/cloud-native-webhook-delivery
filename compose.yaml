@@ -1,0 +1,44 @@
+# ローカル開発用。DynamoDB Local と ElasticMQ はメモリだけで動くので、down で中身が消える。
+# ここにある値はすべてローカル専用のダミーで、秘密ではない。
+# 認証情報とリージョンはダミー値で、どちらのエミュレーターも検証しない。
+
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:3.3.2
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+    ports:
+      - "8000:8000"
+
+  # テーブルを作って終了する。DynamoDB Local の起動を待つ処理はスクリプト側にある
+  dynamodb-init:
+    image: amazon/aws-cli:2.38.6
+    depends_on:
+      - dynamodb
+    entrypoint: ["/bin/bash", "/init/init-dynamodb.sh"]
+    environment:
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_DEFAULT_REGION: ap-northeast-1
+      DYNAMODB_ENDPOINT: http://dynamodb:8000
+    volumes:
+      - ./local/init-dynamodb.sh:/init/init-dynamodb.sh:ro
+    restart: "no"
+
+  elasticmq:
+    image: softwaremill/elasticmq-native:1.7.1
+    ports:
+      - "9324:9324"
+    volumes:
+      - ./local/elasticmq.conf:/opt/elasticmq.conf:ro
+
+  # 署名を検証し、クエリで指定した応答を返す。使い方は cmd/dummy-receiver/main.go
+  dummy-receiver:
+    build:
+      context: .
+      args:
+        SERVICE: dummy-receiver
+    environment:
+      # ローカル専用の固定値。シードで登録するエンドポイントにも同じ値を使う
+      SIGNING_SECRETS: whsec_zzkm2psYYWpTxux7UT7UNBCgkXfTLjwoxYQgPLIQHzI=
+    ports:
+      - "8080:8080"
