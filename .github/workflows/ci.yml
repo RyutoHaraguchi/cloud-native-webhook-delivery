@@ -8,7 +8,8 @@ on:
   # govulncheck で拾うことと、配布元のタグが動いていないかを lockfile ジョブで確かめること。
   # 公開リポジトリでは、60 日間リポジトリに動きがないと GitHub が schedule を無効にする
   schedule:
-    - cron: "0 0 * * 1"
+    # 毎時 0 分は混み合い、遅延や job の破棄が起きやすいのでずらす
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
