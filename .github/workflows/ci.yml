@@ -4,7 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
-  # コードを変えなくても新しい脆弱性は公開されるので、週に一度 govulncheck を走らせる
+  # 週に一度すべてのジョブを走らせる。主な目的は、コードを変えなくても公開される新しい脆弱性を
+  # govulncheck で拾うことと、配布元のタグが動いていないかを lockfile ジョブで確かめること。
+  # 公開リポジトリでは、60 日間リポジトリに動きがないと GitHub が schedule を無効にする
   schedule:
     - cron: "0 0 * * 1"
 
@@ -13,7 +15,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # schedule の実行は main への push と同じ refs/heads/main を共有するので、取り消すのは PR の実行だけにする
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -25,6 +28,8 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@v5.2.3
         with:
+          # mise 本体も Dependabot と同じく、公開から 7 日経った版だけを使う
+          minimum_release_age: 7d
           install_args: go
       - run: go build ./...
       - run: go test -race ./...
@@ -38,6 +43,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@v5.2.3
         with:
+          minimum_release_age: 7d
           install_args: go golangci-lint
       - run: golangci-lint run
 
@@ -50,8 +56,9 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@v5.2.3
         with:
+          minimum_release_age: 7d
           install_args: go
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - run: go tool govulncheck ./...
 
   # actions.lock が workflow と一致し、記録したコミットが本物の配布元から辿れることを確かめる
   lockfile:
