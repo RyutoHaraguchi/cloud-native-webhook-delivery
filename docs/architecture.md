@@ -109,10 +109,13 @@ stateDiagram-v2
     pending --> canceled: エンドポイントが無効または削除済み
     retrying --> canceled: エンドポイントが無効または削除済み
     failed --> pending: 運営者が DLQ から再処理
+    retrying --> pending: 運営者が DLQ から再処理
+    pending --> pending: 運営者が DLQ から再処理
 ```
 
 - `attemptCount` は再送の判断に使う回数で、DLQ からの再処理で 0 に戻します。`attemptSeq` は試行履歴の通し番号で、戻しません
-- `failureReason` は `retries_exhausted`、`gone`（`410`）、`ssrf_blocked` のいずれかです。DLQ に送るのは `retries_exhausted` のみです
+- `failureReason` は `retries_exhausted`、`gone`（`410`）、`ssrf_blocked` のいずれかで、`failed` のときだけ値を持ちます。DLQ に送るのは `retries_exhausted` のみです
+- `canceled` は送信しないので、`attemptCount` と `attemptSeq` を増やしません
 
 ## API
 
@@ -165,10 +168,11 @@ Streams の保持は 24 時間なので、`IteratorAge` と失敗先のキュー
 2. `delivered`、`canceled` なら、メッセージを削除して終了する
 3. `failed` なら、`failureReason` が `retries_exhausted` のときだけ DLQ 送信からやり直し、メッセージを削除して終了する
 4. `nextAttemptAt` より前なら、再送待ちを作り直してからメッセージを削除して終了する
-5. エンドポイントの同時送信数が上限なら、送信回数を増やさず、60 秒程度（ジッター付き）の遅延で送り直してメッセージを削除する
-6. SSRF 検査を通して署名付きで送信する
-7. 条件付き更新（`attemptCount` が期待値の場合のみ）で結果を記録する
-8. 結果に応じて、削除、再送待ちの作成後に削除、または DLQ への送信後に削除を行う
+5. エンドポイントを読み、無効または削除済みなら `canceled` を記録してメッセージを削除する
+6. エンドポイントの同時送信数が上限なら、送信回数を増やさず、60 秒程度（ジッター付き）の遅延で送り直してメッセージを削除する
+7. SSRF 検査を通して署名付きで送信する
+8. 条件付き更新（`status` と `attemptCount` が読んだ値の場合のみ）で結果を記録する。`canceled` の記録も同じ条件で行う
+9. 結果に応じて、削除、再送待ちの作成後に削除、または DLQ への送信後に削除を行う
 
 ### 再送待ち
 
@@ -203,7 +207,7 @@ Streams の保持は 24 時間なので、`IteratorAge` と失敗先のキュー
 
 送信は最大 8 回です。間隔は即時、5 秒、5 分、30 分、2 時間、5 時間、10 時間、10 時間で、合計は約 27 時間半です。各間隔に ±10% のジッターを加えます。
 
-間隔は設定で差し替えられ、検証環境では短くできます。
+間隔は設定で差し替えられ、検証環境では短くできます。上限は送信の後に判断するので、一覧を短くした時点で上限を超えている `retrying` の配信は、もう 1 回送ってから `failed` になります。
 
 ### キューの設定
 
@@ -232,7 +236,7 @@ Streams の保持は 24 時間なので、`IteratorAge` と失敗先のキュー
 
 DynamoDB の障害が長引く間は、ワーカーは受信を止めて待機します。それでも受信回数の上限に達した場合、メッセージは DLQ に移りますが、状態は更新されません。
 
-DLQ の再処理は運営者が `scripts/` で行います。配信を `pending` に、`attemptCount` を 0 に戻してから元のキューへ送るので、再び最大 8 回送信します。エンドポイントが無効または削除済みなら、通常の流れで `canceled` になります。
+DLQ の再処理は運営者が `scripts/` で行います。配信を `pending` に、`attemptCount` を 0 に戻し、`nextAttemptAt` と `failureReason` を空にしてから元のキューへ送るので、再び最大 8 回送信します。対象は `retries_exhausted` で `failed` になった配信と、上記の障害で `pending` や `retrying` のまま DLQ に移った配信です。`delivered`、`canceled`、`gone` や `ssrf_blocked` の `failed` は、メッセージを削除するだけです。エンドポイントが無効または削除済みなら、通常の流れで `canceled` になります。
 
 ### テナント間の分離
 
