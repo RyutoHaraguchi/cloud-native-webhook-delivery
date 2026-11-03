@@ -53,18 +53,21 @@ func testDynamoDB(t *testing.T) *dynamodb.Client {
 		t.Fatalf("docker compose up -d を実行する: DynamoDB Local (%s) に接続できない: %v", testDynamoDBEndpoint, err)
 	}
 
-	deadline := time.Now().Add(testTableWait)
+	// 待ち全体に期限を付ける。DescribeTable が応答しなくなっても testTableWait で打ち切る
+	waitCtx, waitCancel := context.WithTimeout(t.Context(), testTableWait)
+	defer waitCancel()
 	for _, table := range testTables {
 		for {
-			status, err := describeTableStatus(t.Context(), client, table)
+			status, err := describeTableStatus(waitCtx, client, table)
 			if err == nil && status == types.TableStatusActive {
 				break
 			}
-			if time.Now().After(deadline) {
+			select {
+			case <-waitCtx.Done():
 				t.Fatalf("テーブル %s が %s 以内に ACTIVE にならない。docker compose logs dynamodb-init を確認する: status=%q, err=%v",
 					table, testTableWait, status, err)
+			case <-time.After(500 * time.Millisecond):
 			}
-			time.Sleep(500 * time.Millisecond)
 		}
 	}
 	return client
