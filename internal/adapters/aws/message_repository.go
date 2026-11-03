@@ -21,7 +21,10 @@ import (
 const (
 	itemTypeMessage  = "message"
 	itemTypeDelivery = "delivery"
+	itemTypeAttempt  = "attempt"
 )
+
+var _ core.MessageRepository = (*MessageRepository)(nil)
 
 // MessageRepositoryConfig は MessageRepository の設定。値は cmd/ が環境変数から読んで渡す
 type MessageRepositoryConfig struct {
@@ -80,6 +83,16 @@ type deliveryItem struct {
 
 // deliveryRequiredAttributes は読み出した配信の項目に必ずある属性。nextAttemptAt と failureReason は任意
 var deliveryRequiredAttributes = []string{"status", "attemptCount", "attemptSeq"}
+
+// attemptItem は試行の項目の属性。鍵（PK、SK）は含めない。statusCode は応答がなければ 0
+type attemptItem struct {
+	ItemType    string `dynamodbav:"itemType"`
+	AttemptedAt string `dynamodbav:"attemptedAt"`
+	Outcome     string `dynamodbav:"outcome"`
+	StatusCode  int    `dynamodbav:"statusCode"`
+	DurationMs  int64  `dynamodbav:"durationMs"`
+	ExpiresAt   int64  `dynamodbav:"expiresAt"`
+}
 
 // itemKey は messages テーブルの項目の鍵を返す
 func itemKey(pk, sk string) map[string]types.AttributeValue {
@@ -323,4 +336,60 @@ func deliveryUpdate(table string, key core.DeliveryKey, prev, next core.Delivery
 		ExpressionAttributeNames:  map[string]string{"#status": "status"},
 		ExpressionAttributeValues: values,
 	}
+}
+
+// SaveAttempt は SaveDelivery と同じ条件で next を書き、同時に試行の記録を書く。
+// 配信と試行は 1 つのトランザクションで書くので、一方だけ書かれることはない。
+// 試行の通し番号は next.AttemptSeq() を使う。条件が合わない、または同じ番号の試行が既にあれば ErrConflict、
+// 不正な鍵は ErrInvalidKey を返す
+func (r *MessageRepository) SaveAttempt(ctx context.Context, key core.DeliveryKey, prev, next core.Delivery, attempt core.Attempt) error {
+	if err := key.Validate(); err != nil {
+		return fmt.Errorf("save attempt: %w", err)
+	}
+	seq := next.AttemptSeq()
+	attrs, err := attributevalue.MarshalMap(attemptItem{
+		ItemType:    itemTypeAttempt,
+		AttemptedAt: formatTime(attempt.AttemptedAt),
+		Outcome:     string(attempt.Outcome),
+		StatusCode:  attempt.StatusCode,
+		DurationMs:  attempt.Duration.Milliseconds(),
+		ExpiresAt:   r.expiresAt(),
+	})
+	if err != nil {
+		return fmt.Errorf("save attempt %s#%d: marshal: %w", key.EndpointID, seq, err)
+	}
+	maps.Copy(attrs, itemKey(messagePK(key.TenantID, key.MessageID), attemptSK(key.EndpointID, seq)))
+
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{Update: deliveryUpdate(r.table, key, prev, next)},
+			{Put: &types.Put{
+				TableName:           awssdk.String(r.table),
+				Item:                attrs,
+				ConditionExpression: awssdk.String("attribute_not_exists(PK)"),
+			}},
+		},
+	})
+	if err != nil {
+		if isConditionalCheckFailed(err) {
+			return fmt.Errorf("save attempt %s#%d: %w", key.EndpointID, seq, core.ErrConflict)
+		}
+		// 条件の失敗以外（TransactionConflict を含む）は ErrConflict にせず wrap して返し、再受信でやり直す
+		return fmt.Errorf("save attempt %s#%d: %w", key.EndpointID, seq, err)
+	}
+	return nil
+}
+
+// isConditionalCheckFailed は、トランザクションの取り消し理由に条件の失敗が含まれるかを返す
+func isConditionalCheckFailed(err error) bool {
+	canceled, ok := errors.AsType[*types.TransactionCanceledException](err)
+	if !ok {
+		return false
+	}
+	for _, r := range canceled.CancellationReasons {
+		if awssdk.ToString(r.Code) == "ConditionalCheckFailed" {
+			return true
+		}
+	}
+	return false
 }

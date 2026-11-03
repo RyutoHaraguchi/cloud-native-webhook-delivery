@@ -5,6 +5,7 @@ package aws
 import (
 	"bytes"
 	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -459,5 +460,240 @@ func TestMessageRepository_InvalidID(t *testing.T) {
 	}
 	if err := repo.SaveDelivery(t.Context(), key, pending, canceled); !errors.Is(err, core.ErrInvalidKey) {
 		t.Errorf("SaveDelivery err = %v, want ErrInvalidKey", err)
+	}
+	if err := repo.SaveAttempt(t.Context(), key, pending, canceled, core.Attempt{}); !errors.Is(err, core.ErrInvalidKey) {
+		t.Errorf("SaveAttempt err = %v, want ErrInvalidKey", err)
+	}
+}
+
+// recordAttempt は d に送信結果を記録した配信を返す
+func recordAttempt(t *testing.T, d core.Delivery, result core.AttemptResult, schedule core.RetrySchedule, now time.Time) core.Delivery {
+	t.Helper()
+	next, err := d.RecordAttempt(result, schedule, now, 0.5)
+	if err != nil {
+		t.Fatalf("RecordAttempt: %v", err)
+	}
+	return next
+}
+
+// testAttempt は 503 を受け取った試行を返す
+func testAttempt(now time.Time) core.Attempt {
+	return core.Attempt{
+		AttemptedAt: now,
+		Outcome:     core.AttemptOutcomeRetryableFailure,
+		StatusCode:  503,
+		Duration:    1500 * time.Millisecond,
+	}
+}
+
+func attemptRawItem(t *testing.T, client *dynamodb.Client, key core.DeliveryKey, seq int) map[string]types.AttributeValue {
+	t.Helper()
+	return getRawItem(t, client, testMessagesTable, messagePK(key.TenantID, key.MessageID), attemptSK(key.EndpointID, seq))
+}
+
+func TestMessageRepository_SaveAttempt(t *testing.T) {
+	repo, client, clock := newTestMessageRepository(t)
+	key := testDeliveryKey(testTenantID(t))
+	if err := repo.CreateDelivery(t.Context(), key); err != nil {
+		t.Fatalf("CreateDelivery: %v", err)
+	}
+
+	clock.advance(time.Hour)
+	pending := core.NewDelivery()
+	attempt := testAttempt(clock.now())
+	retrying := recordAttempt(t, pending, core.AttemptResult{Outcome: attempt.Outcome, StatusCode: attempt.StatusCode}, core.DefaultRetrySchedule, clock.now())
+	if err := repo.SaveAttempt(t.Context(), key, pending, retrying, attempt); err != nil {
+		t.Fatalf("SaveAttempt: %v", err)
+	}
+
+	got, err := repo.GetDelivery(t.Context(), key)
+	if err != nil {
+		t.Fatalf("GetDelivery: %v", err)
+	}
+	if got.Status() != core.DeliveryStatusRetrying || got.AttemptCount() != 1 || got.AttemptSeq() != 1 {
+		t.Errorf("Status, AttemptCount, AttemptSeq = %q, %d, %d, want retrying, 1, 1", got.Status(), got.AttemptCount(), got.AttemptSeq())
+	}
+
+	raw := attemptRawItem(t, client, key, 1)
+	if raw == nil {
+		t.Fatal("attempt item is nil")
+	}
+	if got := rawString(t, raw, "SK"); got != "ATTEMPT#ep_1#000001" {
+		t.Errorf("SK = %q, want ATTEMPT#ep_1#000001", got)
+	}
+	if got := rawString(t, raw, "itemType"); got != "attempt" {
+		t.Errorf("itemType = %q, want attempt", got)
+	}
+	if got, want := rawString(t, raw, "attemptedAt"), formatTime(attempt.AttemptedAt); got != want {
+		t.Errorf("attemptedAt = %q, want %q", got, want)
+	}
+	if got := rawString(t, raw, "outcome"); got != "retryable_failure" {
+		t.Errorf("outcome = %q, want retryable_failure", got)
+	}
+	if got := rawNumber(t, raw, "statusCode"); got != 503 {
+		t.Errorf("statusCode = %d, want 503", got)
+	}
+	if got := rawNumber(t, raw, "durationMs"); got != 1500 {
+		t.Errorf("durationMs = %d, want 1500", got)
+	}
+	if got, want := rawNumber(t, raw, "expiresAt"), clock.now().Add(testRetention).Unix(); got != want {
+		t.Errorf("expiresAt = %d, want %d", got, want)
+	}
+}
+
+func TestMessageRepository_SaveAttemptNoResponse(t *testing.T) {
+	repo, client, clock := newTestMessageRepository(t)
+	key := testDeliveryKey(testTenantID(t))
+	if err := repo.CreateDelivery(t.Context(), key); err != nil {
+		t.Fatalf("CreateDelivery: %v", err)
+	}
+
+	pending := core.NewDelivery()
+	attempt := testAttempt(clock.now())
+	attempt.StatusCode = 0
+	retrying := recordAttempt(t, pending, core.AttemptResult{Outcome: attempt.Outcome}, core.DefaultRetrySchedule, clock.now())
+	if err := repo.SaveAttempt(t.Context(), key, pending, retrying, attempt); err != nil {
+		t.Fatalf("SaveAttempt: %v", err)
+	}
+	raw := attemptRawItem(t, client, key, 1)
+	if raw == nil {
+		t.Fatal("attempt item is nil")
+	}
+	if got := rawNumber(t, raw, "statusCode"); got != 0 {
+		t.Errorf("statusCode = %d, want 0", got)
+	}
+}
+
+func TestMessageRepository_SaveAttemptConflict(t *testing.T) {
+	repo, client, clock := newTestMessageRepository(t)
+	key := testDeliveryKey(testTenantID(t))
+	if err := repo.CreateDelivery(t.Context(), key); err != nil {
+		t.Fatalf("CreateDelivery: %v", err)
+	}
+	pending := core.NewDelivery()
+	result := core.AttemptResult{Outcome: core.AttemptOutcomeRetryableFailure, StatusCode: 503}
+	retrying := recordAttempt(t, pending, result, core.DefaultRetrySchedule, clock.now())
+	if err := repo.SaveAttempt(t.Context(), key, pending, retrying, testAttempt(clock.now())); err != nil {
+		t.Fatalf("first SaveAttempt: %v", err)
+	}
+
+	// 保存値は retrying なので、pending を前提にした書き込みは古い
+	stale, err := core.RestoreDelivery(core.DeliveryStatusPending, 0, 1, time.Time{}, "")
+	if err != nil {
+		t.Fatalf("RestoreDelivery: %v", err)
+	}
+	next := recordAttempt(t, stale, result, core.DefaultRetrySchedule, clock.now())
+	if next.AttemptSeq() != 2 {
+		t.Fatalf("AttemptSeq = %d, want 2", next.AttemptSeq())
+	}
+	if err := repo.SaveAttempt(t.Context(), key, stale, next, testAttempt(clock.now())); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("second SaveAttempt err = %v, want ErrConflict", err)
+	}
+
+	got, err := repo.GetDelivery(t.Context(), key)
+	if err != nil {
+		t.Fatalf("GetDelivery: %v", err)
+	}
+	if got.Status() != core.DeliveryStatusRetrying || got.AttemptCount() != 1 || got.AttemptSeq() != 1 {
+		t.Errorf("Status, AttemptCount, AttemptSeq = %q, %d, %d, want retrying, 1, 1", got.Status(), got.AttemptCount(), got.AttemptSeq())
+	}
+	if raw := attemptRawItem(t, client, key, 2); raw != nil {
+		t.Errorf("attempt #000002 = %v, want nil", raw)
+	}
+}
+
+func TestMessageRepository_SaveAttemptSeqCollision(t *testing.T) {
+	repo, client, clock := newTestMessageRepository(t)
+	key := testDeliveryKey(testTenantID(t))
+	if err := repo.CreateDelivery(t.Context(), key); err != nil {
+		t.Fatalf("CreateDelivery: %v", err)
+	}
+	putRawItem(t, client, testMessagesTable, map[string]types.AttributeValue{
+		"PK":       &types.AttributeValueMemberS{Value: messagePK(key.TenantID, key.MessageID)},
+		"SK":       &types.AttributeValueMemberS{Value: attemptSK(key.EndpointID, 1)},
+		"itemType": &types.AttributeValueMemberS{Value: "attempt"},
+	})
+
+	pending := core.NewDelivery()
+	retrying := recordAttempt(t, pending, core.AttemptResult{Outcome: core.AttemptOutcomeRetryableFailure, StatusCode: 503}, core.DefaultRetrySchedule, clock.now())
+	if err := repo.SaveAttempt(t.Context(), key, pending, retrying, testAttempt(clock.now())); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("SaveAttempt err = %v, want ErrConflict", err)
+	}
+
+	got, err := repo.GetDelivery(t.Context(), key)
+	if err != nil {
+		t.Fatalf("GetDelivery: %v", err)
+	}
+	if got.Status() != core.DeliveryStatusPending || got.AttemptCount() != 0 || got.AttemptSeq() != 0 {
+		t.Errorf("Status, AttemptCount, AttemptSeq = %q, %d, %d, want pending, 0, 0", got.Status(), got.AttemptCount(), got.AttemptSeq())
+	}
+}
+
+func TestMessageRepository_ReprocessRoundTrip(t *testing.T) {
+	repo, client, clock := newTestMessageRepository(t)
+	key := testDeliveryKey(testTenantID(t))
+	if err := repo.CreateDelivery(t.Context(), key); err != nil {
+		t.Fatalf("CreateDelivery: %v", err)
+	}
+	createdExpiresAt := clock.now().Add(testRetention).Unix()
+
+	// 送信は最大 2 回。2 回とも再送してよい失敗なら failed になる
+	schedule := core.RetrySchedule{time.Second}
+	result := core.AttemptResult{Outcome: core.AttemptOutcomeRetryableFailure, StatusCode: 503}
+	d := core.NewDelivery()
+	for i := range 2 {
+		next := recordAttempt(t, d, result, schedule, clock.now())
+		if err := repo.SaveAttempt(t.Context(), key, d, next, testAttempt(clock.now())); err != nil {
+			t.Fatalf("SaveAttempt %d: %v", i+1, err)
+		}
+		d = next
+		clock.advance(time.Second)
+	}
+	if d.Status() != core.DeliveryStatusFailed || d.FailureReason() != core.FailureReasonRetriesExhausted {
+		t.Fatalf("Status, FailureReason = %q, %q, want failed, retries_exhausted", d.Status(), d.FailureReason())
+	}
+	first := attemptRawItem(t, client, key, 1)
+	second := attemptRawItem(t, client, key, 2)
+	if first == nil || second == nil {
+		t.Fatalf("attempt items = %v, %v, want both", first, second)
+	}
+
+	clock.advance(time.Hour)
+	reprocessed, err := d.Reprocess()
+	if err != nil {
+		t.Fatalf("Reprocess: %v", err)
+	}
+	if err := repo.SaveDelivery(t.Context(), key, d, reprocessed); err != nil {
+		t.Fatalf("SaveDelivery: %v", err)
+	}
+	raw := getRawItem(t, client, testMessagesTable, messagePK(key.TenantID, key.MessageID), deliverySK(key.EndpointID))
+	if _, ok := raw["failureReason"]; ok {
+		t.Errorf("failureReason = %v, want removed", raw["failureReason"])
+	}
+	if _, ok := raw["nextAttemptAt"]; ok {
+		t.Errorf("nextAttemptAt = %v, want removed", raw["nextAttemptAt"])
+	}
+	if got := rawNumber(t, raw, "attemptCount"); got != 0 {
+		t.Errorf("attemptCount = %d, want 0", got)
+	}
+	if got := rawNumber(t, raw, "attemptSeq"); got != 2 {
+		t.Errorf("attemptSeq = %d, want 2", got)
+	}
+	if got := rawNumber(t, raw, "expiresAt"); got != createdExpiresAt {
+		t.Errorf("expiresAt = %d, want %d", got, createdExpiresAt)
+	}
+
+	next := recordAttempt(t, reprocessed, result, schedule, clock.now())
+	if err := repo.SaveAttempt(t.Context(), key, reprocessed, next, testAttempt(clock.now())); err != nil {
+		t.Fatalf("SaveAttempt after reprocess: %v", err)
+	}
+	if raw := attemptRawItem(t, client, key, 3); raw == nil {
+		t.Error("attempt #000003 is nil")
+	}
+	if got := attemptRawItem(t, client, key, 1); !reflect.DeepEqual(got, first) {
+		t.Errorf("attempt #000001 = %v, want unchanged %v", got, first)
+	}
+	if got := attemptRawItem(t, client, key, 2); !reflect.DeepEqual(got, second) {
+		t.Errorf("attempt #000002 = %v, want unchanged %v", got, second)
 	}
 }
