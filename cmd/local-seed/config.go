@@ -63,11 +63,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 	return cfg, nil
 }
 
-// validateDynamoDBURL は接続先のホスト名がローカルのものかを確かめる
+// validateDynamoDBURL は接続先のホスト名がローカルのものかを確かめる。
+// URL のユーザー情報にシークレットが入りうるので、エラーに入力値を含めない
 func validateDynamoDBURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("AWS_ENDPOINT_URL_DYNAMODB: %w", err)
+		// url.Error は入力の URL 全体を含むので、元のエラーは捨てる
+		return errors.New("AWS_ENDPOINT_URL_DYNAMODB is not a valid URL")
 	}
 	for _, host := range allowedDynamoDBHosts {
 		if u.Hostname() == host {

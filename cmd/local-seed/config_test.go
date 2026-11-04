@@ -30,6 +30,8 @@ func TestLoadConfig(t *testing.T) {
 		modify  func(env map[string]string)
 		wantErr bool
 		wantURL string
+		// エラー文字列に含まれてはいけない値
+		notInErr []string
 	}{
 		{name: "all set", modify: func(map[string]string) {}, wantURL: "http://dynamodb:8000"},
 		{name: "missing table", modify: func(env map[string]string) { delete(env, "CONFIG_TABLE") }, wantErr: true},
@@ -63,6 +65,22 @@ func TestLoadConfig(t *testing.T) {
 			modify:  func(env map[string]string) { env["AWS_ENDPOINT_URL_DYNAMODB"] = "http://evil-localhost:8000" },
 			wantErr: true,
 		},
+		{
+			name: "unparsable url with userinfo",
+			modify: func(env map[string]string) {
+				env["AWS_ENDPOINT_URL_DYNAMODB"] = "http://user:whsec_sensitive@localhost:bad"
+			},
+			wantErr:  true,
+			notInErr: []string{"whsec_sensitive", "user"},
+		},
+		{
+			name: "disallowed host with userinfo",
+			modify: func(env map[string]string) {
+				env["AWS_ENDPOINT_URL_DYNAMODB"] = "http://user:whsec_sensitive@dynamodb.example.com:8000"
+			},
+			wantErr:  true,
+			notInErr: []string{"whsec_sensitive", "user"},
+		},
 		{name: "short key", modify: func(env map[string]string) { env["LOCAL_SECRET_KEY"] = shortKey }, wantErr: true},
 		{
 			name:    "signing secret without prefix",
@@ -80,7 +98,7 @@ func TestLoadConfig(t *testing.T) {
 					t.Fatal("loadConfig() error = nil, want error")
 				}
 				// エラーに鍵とシークレットの値を含めない
-				for _, secret := range []string{env["LOCAL_SECRET_KEY"], env["SEED_SIGNING_SECRET"]} {
+				for _, secret := range append([]string{env["LOCAL_SECRET_KEY"], env["SEED_SIGNING_SECRET"]}, tt.notInErr...) {
 					if secret != "" && strings.Contains(err.Error(), secret) {
 						t.Errorf("loadConfig() error %q contains a secret value", err)
 					}
