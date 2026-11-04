@@ -4,6 +4,7 @@ package aws
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -259,4 +260,119 @@ func TestEndpointRepository_InvalidID(t *testing.T) {
 	if err := repo.Disable(t.Context(), tenantID, "ep_1"); !errors.Is(err, core.ErrInvalidKey) {
 		t.Errorf("Disable: err = %v, want ErrInvalidKey", err)
 	}
+}
+
+// testEndpoint は Put で書くための正しいエンドポイントを作る
+func testEndpoint(tenantID, endpointID string, status core.EndpointStatus) core.Endpoint {
+	return core.Endpoint{
+		TenantID:        tenantID,
+		ID:              endpointID,
+		URL:             "https://example.com/hooks/" + endpointID,
+		EventTypes:      []string{"order.created", "order.updated"},
+		EncryptedSecret: []byte("encrypted-secret-" + endpointID),
+		Status:          status,
+	}
+}
+
+func TestEndpointRepository_PutGet(t *testing.T) {
+	repo, _ := newTestEndpointRepository(t)
+	tenantID := testTenantID(t)
+
+	noHeaders := testEndpoint(tenantID, "ep_no_headers", core.EndpointStatusActive)
+	withHeaders := testEndpoint(tenantID, "ep_headers", core.EndpointStatusDisabled)
+	withHeaders.EncryptedHeaders = []byte("encrypted-headers")
+
+	for _, want := range []core.Endpoint{noHeaders, withHeaders} {
+		t.Run(want.ID, func(t *testing.T) {
+			if err := repo.Put(t.Context(), want); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			got, err := repo.Get(t.Context(), tenantID, want.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("Get = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestEndpointRepository_PutOverwrite(t *testing.T) {
+	repo, _ := newTestEndpointRepository(t)
+	tenantID := testTenantID(t)
+	e := testEndpoint(tenantID, "ep_1", core.EndpointStatusActive)
+
+	if err := repo.Put(t.Context(), e); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := repo.Disable(t.Context(), tenantID, "ep_1"); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	if err := repo.Put(t.Context(), e); err != nil {
+		t.Fatalf("Put (上書き): %v", err)
+	}
+	got, err := repo.Get(t.Context(), tenantID, "ep_1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != core.EndpointStatusActive {
+		t.Errorf("Status = %q, want %q", got.Status, core.EndpointStatusActive)
+	}
+}
+
+func TestEndpointRepository_PutListActive(t *testing.T) {
+	repo, _ := newTestEndpointRepository(t)
+	tenantID := testTenantID(t)
+	for _, e := range []core.Endpoint{
+		testEndpoint(tenantID, "ep_1", core.EndpointStatusActive),
+		testEndpoint(tenantID, "ep_2", core.EndpointStatusActive),
+		testEndpoint(tenantID, "ep_3", core.EndpointStatusDisabled),
+	} {
+		if err := repo.Put(t.Context(), e); err != nil {
+			t.Fatalf("Put %s: %v", e.ID, err)
+		}
+	}
+
+	got, err := repo.ListActive(t.Context(), tenantID)
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if ids := endpointIDs(got); !slices.Equal(ids, []string{"ep_1", "ep_2"}) {
+		t.Errorf("IDs = %v, want [ep_1 ep_2]", ids)
+	}
+}
+
+func TestEndpointRepository_PutInvalid(t *testing.T) {
+	repo, _ := newTestEndpointRepository(t)
+
+	t.Run("empty secret", func(t *testing.T) {
+		tenantID := testTenantID(t)
+		e := testEndpoint(tenantID, "ep_1", core.EndpointStatusActive)
+		e.EncryptedSecret = nil
+
+		if err := repo.Put(t.Context(), e); !errors.Is(err, core.ErrInvalidEndpoint) {
+			t.Fatalf("Put: err = %v, want ErrInvalidEndpoint", err)
+		}
+		if _, err := repo.Get(t.Context(), tenantID, "ep_1"); !errors.Is(err, core.ErrNotFound) {
+			t.Errorf("Get: err = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("invalid id", func(t *testing.T) {
+		tenantID := testTenantID(t)
+		e := testEndpoint(tenantID, "ep#1", core.EndpointStatusActive)
+
+		if err := repo.Put(t.Context(), e); !errors.Is(err, core.ErrInvalidKey) {
+			t.Fatalf("Put: err = %v, want ErrInvalidKey", err)
+		}
+		// 書かれていれば SK が壊れた項目になり、ListActive がエラーになる
+		got, err := repo.ListActive(t.Context(), tenantID)
+		if err != nil {
+			t.Fatalf("ListActive: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("ListActive = %v, want empty", got)
+		}
+	})
 }

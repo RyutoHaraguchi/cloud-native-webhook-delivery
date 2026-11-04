@@ -83,6 +83,41 @@ func endpointKey(tenantID, endpointID string) map[string]types.AttributeValue {
 	}
 }
 
+// encodeEndpoint は Endpoint を書き込む項目に変換する。
+// attributevalue で Marshal すると nil のスライスが NULL になり、decodeEndpoint が欠けとして扱うので、属性を直接組み立てる。
+// eventTypes は nil でも空の L で書く。headers は空なら属性ごと省く（nil と空はどちらも「固定ヘッダーなし」）
+func encodeEndpoint(e core.Endpoint) map[string]types.AttributeValue {
+	eventTypes := make([]types.AttributeValue, 0, len(e.EventTypes))
+	for _, eventType := range e.EventTypes {
+		eventTypes = append(eventTypes, &types.AttributeValueMemberS{Value: eventType})
+	}
+	item := endpointKey(e.TenantID, e.ID)
+	item["url"] = &types.AttributeValueMemberS{Value: e.URL}
+	item["eventTypes"] = &types.AttributeValueMemberL{Value: eventTypes}
+	item["secret"] = &types.AttributeValueMemberB{Value: e.EncryptedSecret}
+	item["status"] = &types.AttributeValueMemberS{Value: string(e.Status)}
+	if len(e.EncryptedHeaders) > 0 {
+		item["headers"] = &types.AttributeValueMemberB{Value: e.EncryptedHeaders}
+	}
+	return item
+}
+
+// Put はエンドポイントを書き込む。同じ ID の項目があれば条件なしで上書きする。
+// 値が不正なら書き込まずにエラーを返す（ErrInvalidEndpoint、ID が不正なら ErrInvalidKey にも一致）。
+// シードのための上書き。登録 API ではポートに作成と更新を足すときに見直す
+func (r *EndpointRepository) Put(ctx context.Context, e core.Endpoint) error {
+	if err := e.Validate(); err != nil {
+		return fmt.Errorf("put endpoint: %w", err)
+	}
+	if _, err := r.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: awssdk.String(r.table),
+		Item:      encodeEndpoint(e),
+	}); err != nil {
+		return fmt.Errorf("put endpoint %s: %w", e.ID, err)
+	}
+	return nil
+}
+
 // Get はエンドポイントを取得する。なければ ErrNotFound、不正な ID は ErrInvalidKey を返す
 func (r *EndpointRepository) Get(ctx context.Context, tenantID, endpointID string) (core.Endpoint, error) {
 	if err := core.ValidateID("tenantId", tenantID); err != nil {
