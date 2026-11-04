@@ -4,11 +4,12 @@
 
 ## 現在の状態
 
-実装中。`internal/core` と `internal/adapters/aws`（DynamoDB と SQS のアダプタ）まで実装済み。`cmd` にはまだアダプタを配線していない。以下のコマンドと構成には予定のものを含むので、該当ファイルが存在するか確認してから使う。
+実装中。`internal/core` と `internal/adapters/aws`（DynamoDB と SQS のアダプタ）、`internal/adapters/local`（ローカル用の SecretCipher）まで実装済み。`cmd` でアダプタを配線しているのは、config テーブルにエンドポイントを書くローカル用のシード（`cmd/local-seed`）だけ。以下のコマンドと構成には予定のものを含むので、該当ファイルが存在するか確認してから使う。
 
 ## 構成
 
-- `cmd/`: `ingest-api`、`management-api`、`authorizer`、`enqueuer`、`delivery-worker`、`dummy-receiver`
+- `cmd/`: `ingest-api`、`management-api`、`authorizer`、`enqueuer`、`delivery-worker`、`dummy-receiver`、`local-seed`
+- `internal/adapters/local`: ローカル開発用の実装（AES-256-GCM の SecretCipher）
 - `internal/core`: クラウド非依存のドメインロジック
 - `internal/adapters/aws`: AWS SDK を使う実装
 - `scripts/`: テナント作成や DLQ の再処理など、運営者用のコマンド
@@ -20,7 +21,7 @@
 go build ./...
 golangci-lint run
 go test ./...                       # ユニットテスト
-docker compose up -d                # DynamoDB Local、ElasticMQ、dummy-receiver
+docker compose up -d                # DynamoDB Local、ElasticMQ、dummy-receiver。起動のたびにシードを書く
 go test -tags=integration ./...
 terraform -chdir=infra/aws/envs/dev plan
 ```
