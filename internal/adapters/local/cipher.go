@@ -27,8 +27,8 @@ func ParseKey(s string) ([]byte, error) {
 	}
 	key, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
-		// base64 のエラーは入力の一部を含みうるので、文脈を付けて包まない
-		return nil, errors.New("local secret key is not valid base64")
+		// base64.CorruptInputError は不正な位置の整数だけを持ち、鍵の値を含まないので包んでよい
+		return nil, fmt.Errorf("local secret key is not valid base64: %w", err)
 	}
 	if len(key) != keySize {
 		return nil, fmt.Errorf("local secret key must be %d bytes, got %d", keySize, len(key))
