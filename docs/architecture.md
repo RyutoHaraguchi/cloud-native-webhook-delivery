@@ -254,7 +254,8 @@ DLQ の再処理は運営者が `scripts/` で行います。配信を `pending`
 - `webhook-id` はメッセージ ID で、再送でも送信先ごとにも変わりません。`webhook-timestamp` は送信の時刻です
 - シークレットはエンドポイントごとに発行します（`whsec_` 接頭辞、32 バイトのランダム値）
 - 署名の前提は署名を作る処理だけで確かめます。`whsec_` 接頭辞のないシークレット、24〜64 バイトの範囲外の鍵、空または `.` を含むメッセージ ID はエラーにして、送信しません
-- 暗号化には全テナント共通の KMS キーを使い、暗号化コンテキストにテナント ID とエンドポイント ID を含めます
+- 暗号化には全テナント共通の KMS キーを使い、暗号化コンテキストにテナント ID とエンドポイント ID を含めます。別のエンドポイントのアイテムに暗号文を写しても復号できないので、他の送信先の鍵で署名することはありません
+- ローカルでは KMS の代わりに AES-256-GCM を使い、追加の認証データ（AAD）に `TENANT#<tenantId>#ENDPOINT#<endpointId>` を入れて暗号化コンテキストと同じ効果を得ます。暗号文は nonce（12 バイト）と GCM の出力を連結したものです。鍵は `LOCAL_SECRET_KEY`（base64 の 32 バイト）で、ローカル専用の固定値を `compose.yaml` に置きます
 - 復号結果はワーカーのメモリに 5 分保持します。キャッシュのキーは暗号文にするので、更新後の値はすぐに使われます
 - 更新後 24 時間は、新旧 2 つの署名を `webhook-signature` に併記します
 - 固定ヘッダーも同じ方法で暗号化します。`webhook-*`、`Host`、`Content-Length` などは登録できません。固定ヘッダーは署名の対象外です
@@ -306,6 +307,22 @@ DLQ の再処理は運営者が `scripts/` で行います。配信を `pending`
 - `fail` の回数は `webhook-id` と URL の組ごとにメモリで数えます。`webhook-id` は送信先をまたいで同じなので、送信先ごとに別のパスを登録します。再起動で消え、Lambda ではインスタンス間で共有されないので、AWS 上では回数がずれることがあります
 - ログに本文、シークレット、生のクエリは出しません。不正な入力は固定の理由コードで記録し、応答にも入力値を含めません
 
+### ローカルのシード
+
+登録 API がなくても通しを動かせるよう、`cmd/local-seed` が config テーブルにエンドポイントを直接書きます。Compose の初期化コンテナとして、テーブルの作成後に `docker compose up` のたびに動きます。
+
+| エンドポイント | URL | `eventTypes` | `status` | 確かめること |
+|---|---|---|---|---|
+| `ep_ok` | `http://dummy-receiver:8080/ok` | `test.ok` | `active` | 1 回で届く |
+| `ep_flaky` | `http://dummy-receiver:8080/flaky?fail=2&status=503` | `test.retry` | `active` | 2 回失敗し、再送で届く |
+| `ep_disabled` | `http://dummy-receiver:8080/disabled` | `test.ok` | `disabled` | 配信が作られない |
+
+- テナントは `t_local` だけです。テナントの `META` と API キーはまだ読む処理がないので書きません
+- シークレットは全エンドポイントで同じ 1 つの値で、`dummy-receiver` の `SIGNING_SECRETS` と同じ値を `compose.yaml` の 1 か所から渡します
+- 毎回同じ値で上書きするので、手で無効にしたエンドポイントも次の起動で元に戻ります
+- 接続先が `localhost`、`127.0.0.1`、`dynamodb` 以外なら起動しません。認証情報はダミーに固定し、環境変数から受け継ぎません。AWS の認証情報があるシェルで実行しても、実環境に書き込まないようにするためです
+- SSRF の例外（`http` と 8080 番）は、delivery-worker の接続処理を作るときに `SSRF_ALLOWED_HOSTS` で扱います
+
 ## クラウド間の移植
 
 `internal/core` は次のポートを Go のインターフェースとして定義し、`internal/adapters/aws` が実装します。`core` からの AWS SDK の参照は、`golangci-lint` の `depguard` で禁止します。再送の判断は `core` が行い、アダプタは指定された遅延の実現だけを担います。
@@ -316,12 +333,12 @@ DLQ の再処理は運営者が `scripts/` で行います。配信を `pending`
 | `EndpointRepository` | エンドポイントの取得、テナントの有効なエンドポイントの一覧、無効化 |
 | `DeliveryPublisher` | 遅延付きの投入（上限 15 分）、DLQ への送信 |
 | `DeliveryConsumer` | 受信、確認応答 |
-| `SecretCipher` | シークレットの暗号化と復号 |
+| `SecretCipher` | シークレットと固定ヘッダーの暗号化と復号。テナント ID とエンドポイント ID（`SecretContext`）を暗号化コンテキストにする |
 
 - 現在時刻は `func() time.Time` として注入し、テストでは固定した時刻を返す関数を渡します
 - 配信は `DeliveryKey`（テナント ID、メッセージ ID、エンドポイント ID）で指します。SQS の本文も同じ 3 つの JSON です。ID は空や `#` を含むものを拒否し、キーの連結で他のテナントのアイテムを指せないようにします
 - 配信の更新には、読んだ値と新しい値の両方を渡します。アダプタは読んだ値の `status` と `attemptCount` から条件を作ります
-- アダプタは `core` の `ErrNotFound`（アイテムがない）、`ErrConflict`（条件付き書き込みの失敗）、`ErrDelayTooLong`（キューの遅延の上限超え）、`ErrInvalidKey`（不正な ID）を返します。呼び出し側は SDK の型を見ません。15 分を超える待ちは呼び出し側が Scheduler で作ります
+- アダプタは `core` の `ErrNotFound`（アイテムがない）、`ErrConflict`（条件付き書き込みの失敗）、`ErrDelayTooLong`（キューの遅延の上限超え）、`ErrInvalidKey`（不正な ID）、`ErrUndecryptable`（暗号文をそのコンテキストで復号できない）を返します。`ErrUndecryptable` は改ざん、コンテキストの不一致、鍵の違いを区別せず、何度やり直しても成功しない失敗を表します。それ以外の `SecretCipher` のエラー（KMS への通信失敗など）は一時的なものとして扱えます。呼び出し側は SDK の型を見ません。15 分を超える待ちは呼び出し側が Scheduler で作ります
 - 受信した本文を読めなければ、その 1 件だけをエラーとして返します。同じバッチの他のメッセージは処理します
 
 GCP 版の具体的なサービス構成は、AWS 版の完成後に決定します。
@@ -332,4 +349,4 @@ DynamoDB の値はアダプタで検証してから `core` に渡します。必
 
 ### 設定
 
-接続先は SDK 標準の環境変数（ローカルでは `AWS_ENDPOINT_URL_DYNAMODB`、`AWS_ENDPOINT_URL_SQS`）で切り替えます。テーブル名、キューの URL、保持期間は `MESSAGES_TABLE`、`CONFIG_TABLE`、`DELIVERY_QUEUE_URL`、`DELIVERY_DLQ_URL`、`MESSAGE_RETENTION` から読みます。既定値はなく、各コマンドは自分が使う値が 1 つでも欠ければ起動しません。読むのは `cmd/` で、アダプタは値を引数で受け取ります。
+接続先は SDK 標準の環境変数（ローカルでは `AWS_ENDPOINT_URL_DYNAMODB`、`AWS_ENDPOINT_URL_SQS`）で切り替えます。テーブル名、キューの URL、保持期間は `MESSAGES_TABLE`、`CONFIG_TABLE`、`DELIVERY_QUEUE_URL`、`DELIVERY_DLQ_URL`、`MESSAGE_RETENTION` から読みます。既定値はなく、各コマンドは自分が使う値が 1 つでも欠ければ起動しません。読むのは `cmd/` で、アダプタは値を引数で受け取ります。ローカル用の `SecretCipher` の鍵は `LOCAL_SECRET_KEY`、シードが書くシークレットの平文は `SEED_SIGNING_SECRET` から読みます。

@@ -51,6 +51,15 @@ type EndpointRepository interface {
 	Disable(ctx context.Context, tenantID, endpointID string) error
 }
 
+// SecretCipher はシークレットと固定ヘッダーを、SecretContext を暗号化コンテキストにして暗号化と復号をする。
+type SecretCipher interface {
+	// Encrypt は plaintext を sc に結び付けて暗号化する。sc が不正なら ErrInvalidKey を返す。
+	Encrypt(ctx context.Context, sc SecretContext, plaintext []byte) ([]byte, error)
+	// Decrypt は ciphertext を復号する。暗号化と同じ sc でなければ ErrUndecryptable、
+	// sc が不正なら ErrInvalidKey を返す。それ以外のエラーは一時的なもので、やり直せば成功しうる。
+	Decrypt(ctx context.Context, sc SecretContext, ciphertext []byte) ([]byte, error)
+}
+
 // DeliveryPublisher は配信をキューに入れる。
 type DeliveryPublisher interface {
 	// Send は delay だけ遅らせて配信をキューに入れる。delay が 15 分を超えれば ErrDelayTooLong を返す。

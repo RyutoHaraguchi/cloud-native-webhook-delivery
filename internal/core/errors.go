@@ -12,4 +12,7 @@ var (
 	ErrConflict = errors.New("conflict")
 	// ErrDelayTooLong はキューに入れるときの遅延が、キューで指定できる上限を超えていることを表す。
 	ErrDelayTooLong = errors.New("delay too long")
+	// ErrUndecryptable は暗号文をそのコンテキストで復号できないことを表す。
+	// 改ざん、コンテキストの不一致、鍵の違いを区別しない。
+	ErrUndecryptable = errors.New("undecryptable secret")
 )
