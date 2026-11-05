@@ -2,6 +2,13 @@
 # ここにある値はすべてローカル専用のダミーで、秘密ではない。
 # 認証情報とリージョンはダミー値で、どちらのエミュレーターも検証しない。
 
+# 複数のサービスで共有するローカル専用のダミー値。delivery-worker を足すときも同じアンカーを使う
+x-local:
+  # 署名シークレット。dummy-receiver の検証とシードの登録で同じ値を使う
+  signing-secret: &signing_secret whsec_zzkm2psYYWpTxux7UT7UNBCgkXfTLjwoxYQgPLIQHzI=
+  # ローカル用 SecretCipher（AES-256-GCM）の鍵。openssl rand -base64 32 で作ったローカル専用のダミー
+  secret-key: &secret_key RLIn+XJQY7BZ4CjVduujLUn4EeXNW7lZTM7BLfUZUN4=
+
 services:
   dynamodb:
     image: amazon/dynamodb-local:3.3.2
@@ -38,7 +45,22 @@ services:
       args:
         SERVICE: dummy-receiver
     environment:
-      # ローカル専用の固定値。シードで登録するエンドポイントにも同じ値を使う
-      SIGNING_SECRETS: whsec_zzkm2psYYWpTxux7UT7UNBCgkXfTLjwoxYQgPLIQHzI=
+      SIGNING_SECRETS: *signing_secret
     ports:
       - "8080:8080"
+
+  # config テーブルに t_local のエンドポイントを書いて終了する。書く内容は cmd/local-seed/endpoints.go と docs/architecture.md の「ローカルのシード」
+  seed:
+    build:
+      context: .
+      args:
+        SERVICE: local-seed
+    depends_on:
+      dynamodb-init:
+        condition: service_completed_successfully
+    environment:
+      CONFIG_TABLE: config
+      AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb:8000
+      LOCAL_SECRET_KEY: *secret_key
+      SEED_SIGNING_SECRET: *signing_secret
+    restart: "no"
