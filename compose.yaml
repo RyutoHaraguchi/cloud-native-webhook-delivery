@@ -85,7 +85,7 @@ services:
       DELIVERY_DLQ_URL: http://elasticmq:9324/000000000000/deliveries-dlq
       MESSAGE_RETENTION: 168h
       LOCAL_SECRET_KEY: *secret_key
-      # dummy-receiver だけ http と 8080 番を許す
+      # dummy-receiver を SSRF の例外にする（http と https、任意のポート、内部 IP を許す）
       SSRF_ALLOWED_HOSTS: dummy-receiver
       # 1 秒を 7 個。送信回数の上限 8 回を保ったまま、ローカルの再送を待たずに確かめる
       RETRY_SCHEDULE: 1s,1s,1s,1s,1s,1s,1s
@@ -94,5 +94,5 @@ services:
       AWS_ACCESS_KEY_ID: local
       AWS_SECRET_ACCESS_KEY: local
       AWS_REGION: ap-northeast-1
-    # 処理中の送信（最長 30 秒）と記録を終えるまで待つ
-    stop_grace_period: 45s
+    # 処理中の配信を終えるまで待つ。1 件の処理の期限 80 秒（internal/app の handleTimeout）より長くする
+    stop_grace_period: 90s

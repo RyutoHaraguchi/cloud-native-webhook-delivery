@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -414,6 +415,44 @@ func TestSender_ErrorOmitsQuery(t *testing.T) {
 		if strings.Contains(err.Error(), "whsec_sensitive") {
 			t.Errorf("err = %q contains query", err)
 		}
+	}
+}
+
+// TestSender_DoErrorOmitsQuery は client.Do の失敗（接続拒否）でも、エラーに URL のクエリが入らず、
+// 中のエラーの errors.Is が保たれることを確かめる。
+func TestSender_DoErrorOmitsQuery(t *testing.T) {
+	// 空いているポートを取ってすぐ閉じ、接続が拒否される宛先にする
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	s := New(Config{
+		AllowedHosts: []string{"receiver.test"},
+		LookupIP: lookupFunc(nil, map[string][]netip.Addr{
+			"ip4": {netip.MustParseAddr("127.0.0.1")},
+		}, nil),
+	})
+	rawURL := "http://receiver.test:" + strconv.Itoa(port) + "/hook?token=secret-marker"
+	_, err = s.Send(context.Background(), core.WebhookRequest{URL: rawURL})
+	if err == nil {
+		t.Fatal("Send: want error")
+	}
+	if strings.Contains(err.Error(), "secret-marker") {
+		t.Errorf("err = %q contains query", err)
+	}
+	if _, ok := errors.AsType[*url.Error](err); ok {
+		t.Errorf("err = %v, url.Error must be unwrapped", err)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Errorf("err = %v, want errors.Is ECONNREFUSED", err)
+	}
+	if errors.Is(err, core.ErrSSRFBlocked) {
+		t.Errorf("err = %v, must not be ErrSSRFBlocked", err)
 	}
 }
 
