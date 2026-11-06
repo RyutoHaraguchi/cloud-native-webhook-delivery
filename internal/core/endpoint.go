@@ -39,12 +39,13 @@ func (e Endpoint) Validate() error {
 	if err := ValidateID("endpointId", e.ID); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
 	}
+	// URL はクエリにトークンを含みうるので、エラーに URL も url.Error（URL を含む）も入れない
 	u, err := url.Parse(e.URL)
 	if err != nil {
-		return fmt.Errorf("%w: url: %w", ErrInvalidEndpoint, err)
+		return fmt.Errorf("%w: url is not parseable", ErrInvalidEndpoint)
 	}
 	if u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("%w: url %q has no scheme or host", ErrInvalidEndpoint, e.URL)
+		return fmt.Errorf("%w: url has no scheme or host", ErrInvalidEndpoint)
 	}
 	for _, eventType := range e.EventTypes {
 		if !IsValidEventType(eventType) {

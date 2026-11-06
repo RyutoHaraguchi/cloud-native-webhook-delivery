@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +58,31 @@ func TestEndpointValidate(t *testing.T) {
 			}
 			if test.wantKeyErr && !errors.Is(err, ErrInvalidKey) {
 				t.Errorf("Validate() = %v, want ErrInvalidKey にも一致", err)
+			}
+		})
+	}
+}
+
+// URL はクエリにトークンを含みうるので、検証のエラーに URL を入れない。
+func TestEndpointValidate_ErrorOmitsURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"scheme と host がない", "hook?token=secret-marker"},
+		{"解析できない", "https://example.com/%zz?token=secret-marker"},
+		{"制御文字", "https://example.com/\x7f?token=secret-marker"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e := validEndpoint()
+			e.URL = test.url
+			err := e.Validate()
+			if !errors.Is(err, ErrInvalidEndpoint) {
+				t.Fatalf("Validate() = %v, want ErrInvalidEndpoint", err)
+			}
+			if strings.Contains(err.Error(), "secret-marker") {
+				t.Errorf("エラーに URL が含まれる: %v", err)
 			}
 		})
 	}

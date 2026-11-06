@@ -15,6 +15,16 @@ linters:
               desc: core から GCP に依存しない。internal/adapters に置く
             - pkg: github.com/RyutoHaraguchi/cloud-native-webhook-delivery/internal/adapters
               desc: core から adapters に依存しない
+        app-is-cloud-agnostic:
+          files:
+            - "**/internal/app/**"
+          deny:
+            - pkg: github.com/aws
+              desc: app から AWS に依存しない。ポートを通して使う
+            - pkg: cloud.google.com/go
+              desc: app から GCP に依存しない。ポートを通して使う
+            - pkg: github.com/RyutoHaraguchi/cloud-native-webhook-delivery/internal/adapters
+              desc: app から adapters に依存しない。ポートを通して使う
 formatters:
   enable:
     - gofmt

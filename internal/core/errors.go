@@ -15,4 +15,6 @@ var (
 	// ErrUndecryptable は暗号文をそのコンテキストで復号できないことを表す。
 	// 改ざん、コンテキストの不一致、鍵の違いを区別しない。
 	ErrUndecryptable = errors.New("undecryptable secret")
+	// ErrSSRFBlocked は SSRF 検査で送信を止めたことを表す。
+	ErrSSRFBlocked = errors.New("ssrf blocked")
 )
