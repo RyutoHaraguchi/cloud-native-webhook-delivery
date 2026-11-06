@@ -440,6 +440,61 @@ func TestSender_DialControlBlocksIP(t *testing.T) {
 	}
 }
 
+func TestSender_TimeoutCoversResolution(t *testing.T) {
+	s := New(Config{
+		Timeout: 50 * time.Millisecond,
+		LookupIP: func(ctx context.Context, _, _ string) ([]netip.Addr, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		// 期限のない ctx でも Timeout で打ち切られること
+		_, err := s.Send(context.WithoutCancel(context.Background()), core.WebhookRequest{URL: "https://hooks.example.test/"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Send: want error, got nil")
+		}
+		if errors.Is(err, core.ErrSSRFBlocked) {
+			t.Errorf("err = %v, must not be ErrSSRFBlocked", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Send did not return within 1s")
+	}
+}
+
+func TestSender_AllowedHTTPDefaultsToPort80(t *testing.T) {
+	s := New(Config{AllowedHosts: []string{"dummy-receiver"}})
+	tests := []struct {
+		url     string
+		allowed bool
+		want    string
+	}{
+		{url: "http://dummy-receiver/", allowed: true, want: "80"},
+		{url: "https://dummy-receiver/", allowed: true, want: "443"},
+		{url: "https://hooks.example.test/", allowed: false, want: "443"},
+	}
+	for _, tt := range tests {
+		u, err := url.Parse(tt.url)
+		if err != nil {
+			t.Fatalf("parse %s: %v", tt.url, err)
+		}
+		// 戻り値のポートがそのまま dialAddrs に渡る
+		got, err := s.checkSchemeAndPort(u, tt.allowed)
+		if err != nil {
+			t.Fatalf("checkSchemeAndPort(%s): %v", tt.url, err)
+		}
+		if got != tt.want {
+			t.Errorf("checkSchemeAndPort(%s) port = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
 func mustAtoi(t *testing.T, s string) int {
 	t.Helper()
 	n, err := strconv.Atoi(s)

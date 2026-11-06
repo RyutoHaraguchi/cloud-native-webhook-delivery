@@ -72,7 +72,12 @@ func New(cfg Config) *Sender {
 
 // Send は req.URL を検査し、検査済みの IP にだけ接続して POST する。
 // 応答があればステータスに関係なく nil エラーで返す。
+// Timeout は名前解決、接続、応答の受信を合わせた Send 全体の上限になる。
 func (s *Sender) Send(ctx context.Context, req core.WebhookRequest) (core.WebhookResponse, error) {
+	// 呼び出し側の ctx に期限がなくても、名前解決が止まったまま戻らないことがないようにする
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
 	u, err := url.Parse(req.URL)
 	if err != nil {
 		// url.Error は入力の URL 全体（クエリを含む）を持つので、元のエラーは捨てる
@@ -184,8 +189,8 @@ func (s *Sender) do(ctx context.Context, u *url.URL, req core.WebhookRequest, ad
 		ForceAttemptHTTP2: true,
 	}
 	client := &http.Client{
+		// 期限は Send で ctx に付けている
 		Transport: transport,
-		Timeout:   s.timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
