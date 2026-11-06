@@ -591,6 +591,44 @@ func TestHandle_DLQFailureNotAcked(t *testing.T) {
 	assertNotAcked(t, f)
 }
 
+func TestHandle_BeforeNextAttemptRequeueFailureNotAcked(t *testing.T) {
+	f := newFixture()
+	f.messages.PutDelivery(testKey, restore(t, core.DeliveryStatusRetrying, 1, f.clock.Now().Add(40*time.Second), ""))
+	f.queue.sendErr = errTemp
+	f.handle(t)
+
+	assertCalls(t, f, callGetDelivery, callSend)
+	assertNotAcked(t, f)
+}
+
+func TestHandle_RetriesExhaustedDLQFailureNotAcked(t *testing.T) {
+	f := newFixture()
+	f.schedule = nil
+	f.sender.resp = core.WebhookResponse{StatusCode: 503}
+	f.queue.dlqErr = errTemp
+	f.handle(t)
+
+	onlyAttempt(t, f)
+	if n := f.rec.Count(callSendToDLQ); n != 1 {
+		t.Errorf("SendToDLQ の回数 = %d, want 1", n)
+	}
+	assertNotAcked(t, f)
+}
+
+func TestHandle_InvalidKeyNotAcked(t *testing.T) {
+	f := newFixture()
+	key := testKey
+	key.MessageID = "msg#1"
+	f.worker(t).Handle(context.Background(), core.QueuedDelivery{Key: key, Receipt: testReceipt})
+
+	// リポジトリもキューも呼ばない
+	assertCalls(t, f)
+	entries := f.logEntries(t)
+	if len(entries) != 1 || entries[0]["msg"] != "delivery isolated" {
+		t.Errorf("ログ = %v, want msg %q を 1 件", entries, "delivery isolated")
+	}
+}
+
 func TestHandle_AckFailureLogged(t *testing.T) {
 	f := newFixture()
 	f.queue.ackErr = errTemp
@@ -613,6 +651,18 @@ func TestHandle_LogsDoNotContainSecret(t *testing.T) {
 		{"503", func(f *fixture) { f.sender.resp = core.WebhookResponse{StatusCode: 503} }},
 		{"ErrUndecryptable", func(f *fixture) { f.cipher.err = core.ErrUndecryptable }},
 		{"SignatureHeader のエラー", func(f *fixture) { f.cipher.plaintext = []byte("not-a-secret") }},
+		{"壊れた URL のエンドポイント", func(f *fixture) {
+			// アダプタは読んだエンドポイントを Validate し、そのエラーを返す
+			broken := core.Endpoint{
+				TenantID: testKey.TenantID, ID: testKey.EndpointID, URL: "hook?token=secret-marker",
+				EncryptedSecret: []byte(testCiphertext), Status: core.EndpointStatusActive,
+			}
+			err := broken.Validate()
+			if err == nil {
+				panic("壊れた URL のエンドポイントが検証を通った")
+			}
+			f.endpoints.getErr = fmt.Errorf("get endpoint item: %w", err)
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -624,7 +674,7 @@ func TestHandle_LogsDoNotContainSecret(t *testing.T) {
 			if out == "" {
 				t.Fatal("ログが出ていない")
 			}
-			for _, banned := range []string{testSecret, "whsec_", "not-a-secret", testCiphertext, string(testPayload), "payload-body-marker", "query-marker"} {
+			for _, banned := range []string{testSecret, "whsec_", "not-a-secret", testCiphertext, string(testPayload), "payload-body-marker", "query-marker", "secret-marker"} {
 				if strings.Contains(out, banned) {
 					t.Errorf("ログに %q が含まれる: %s", banned, out)
 				}
