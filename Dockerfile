@@ -8,7 +8,8 @@ COPY cmd/ cmd/
 COPY internal/ internal/
 RUN test -n "$SERVICE" && CGO_ENABLED=0 go build -trimpath -o /out/app "./cmd/$SERVICE"
 
-# 外部へ接続しないコマンドだけを想定し、CA 証明書を入れない。必要になったら基盤イメージを見直す
+# CA 証明書を入れないので、TLS で接続する処理（https の送信先、AWS の API）はこのイメージでは動かない。
+# ローカルの compose は http だけで動く。AWS 用のイメージはフェーズ 5 で CA 証明書を入れて見直す
 FROM scratch
 COPY --from=build /out/app /app
 USER 65532:65532

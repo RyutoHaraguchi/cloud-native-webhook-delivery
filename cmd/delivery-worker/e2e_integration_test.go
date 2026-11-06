@@ -136,24 +136,30 @@ func TestDeliveryWorkerEndToEnd(t *testing.T) {
 				t.Fatalf("Send() error = %v", err)
 			}
 
-			deadline := time.Now().Add(e2eDeliveredWait)
+			// 待ち全体に期限を付ける。GetDelivery が止まっても e2eDeliveredWait で打ち切り、案内を出す
+			pollCtx, cancel := context.WithTimeout(ctx, e2eDeliveredWait)
+			defer cancel()
+			timedOut := func(last core.Delivery, cause error) {
+				t.Helper()
+				t.Fatalf("%s 以内に delivered にならない (status=%s, attemptCount=%d, messageId=%s, cause=%v)。docker compose logs delivery-worker を確認する",
+					e2eDeliveredWait, last.Status(), last.AttemptCount(), msg.ID, cause)
+			}
 			var last core.Delivery
 			for {
-				d, err := repo.GetDelivery(ctx, key)
+				d, err := repo.GetDelivery(pollCtx, key)
 				if err != nil {
+					if pollCtx.Err() != nil {
+						timedOut(last, err)
+					}
 					t.Fatalf("GetDelivery() error = %v", err)
 				}
 				last = d
 				if d.Status() == core.DeliveryStatusDelivered {
 					break
 				}
-				if time.Now().After(deadline) {
-					t.Fatalf("%s 以内に delivered にならない (status=%s, attemptCount=%d, messageId=%s)。docker compose logs delivery-worker を確認する",
-						e2eDeliveredWait, d.Status(), d.AttemptCount(), msg.ID)
-				}
 				select {
-				case <-ctx.Done():
-					t.Fatalf("待っている間に取り消された: %v", ctx.Err())
+				case <-pollCtx.Done():
+					timedOut(last, pollCtx.Err())
 				case <-time.After(e2ePollInterval):
 				}
 			}
