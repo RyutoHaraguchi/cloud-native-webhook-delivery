@@ -2,7 +2,7 @@
 # ここにある値はすべてローカル専用のダミーで、秘密ではない。
 # 認証情報とリージョンはダミー値で、どちらのエミュレーターも検証しない。
 
-# 複数のサービスで共有するローカル専用のダミー値。delivery-worker を足すときも同じアンカーを使う
+# 複数のサービスで共有するローカル専用のダミー値。seed、dummy-receiver、delivery-worker が同じアンカーを使う
 x-local:
   # 署名シークレット。dummy-receiver の検証とシードの登録で同じ値を使う
   signing-secret: &signing_secret whsec_zzkm2psYYWpTxux7UT7UNBCgkXfTLjwoxYQgPLIQHzI=
@@ -64,3 +64,35 @@ services:
       LOCAL_SECRET_KEY: *secret_key
       SEED_SIGNING_SECRET: *signing_secret
     restart: "no"
+
+  # deliveries キューから配信を受け取り、dummy-receiver へ署名して送る。設定の意味は cmd/delivery-worker/main.go
+  delivery-worker:
+    build:
+      context: .
+      args:
+        SERVICE: delivery-worker
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      elasticmq:
+        condition: service_started
+      dummy-receiver:
+        condition: service_started
+    environment:
+      MESSAGES_TABLE: messages
+      CONFIG_TABLE: config
+      DELIVERY_QUEUE_URL: http://elasticmq:9324/000000000000/deliveries
+      DELIVERY_DLQ_URL: http://elasticmq:9324/000000000000/deliveries-dlq
+      MESSAGE_RETENTION: 168h
+      LOCAL_SECRET_KEY: *secret_key
+      # dummy-receiver だけ http と 8080 番を許す
+      SSRF_ALLOWED_HOSTS: dummy-receiver
+      # 1 秒を 7 個。送信回数の上限 8 回を保ったまま、ローカルの再送を待たずに確かめる
+      RETRY_SCHEDULE: 1s,1s,1s,1s,1s,1s,1s
+      AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb:8000
+      AWS_ENDPOINT_URL_SQS: http://elasticmq:9324
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_REGION: ap-northeast-1
+    # 処理中の送信（最長 30 秒）と記録を終えるまで待つ
+    stop_grace_period: 45s
