@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/RyutoHaraguchi/cloud-native-webhook-delivery/internal/core"
@@ -13,6 +14,12 @@ import (
 
 // MaxQueueDelay は 1 回の再送待ちで SQS に入れる遅延の上限。これを超える待ちは刻んで入れる
 const MaxQueueDelay = 15 * time.Minute
+
+// receiveBatchSize は 1 回の受信で受け取る配信の最大数。SQS の上限に合わせる
+const receiveBatchSize = 10
+
+// receiveErrorBackoff は受信に失敗したとき、次の受信までに待つ時間。
+const receiveErrorBackoff = time.Second
 
 // userAgent は送信するリクエストの User-Agent。
 const userAgent = "cloud-native-webhook-delivery"
@@ -76,6 +83,47 @@ func NewDeliveryWorker(d Deps) (*DeliveryWorker, error) {
 		}
 	}
 	return &DeliveryWorker{d: d}, nil
+}
+
+// Run は ctx がキャンセルされるまで、配信を受信して処理し続ける。
+// 1 回に受け取った分は並列に処理し、全部終えてから次を受信する。
+// ctx がキャンセルされたら新しい受信をやめ、処理中の分はキャンセルしない ctx で最後まで終えてから nil を返す。
+func (w *DeliveryWorker) Run(ctx context.Context) error {
+	for ctx.Err() == nil {
+		batch, err := w.d.Consumer.Receive(ctx, receiveBatchSize)
+		if err != nil {
+			if ctx.Err() != nil {
+				// キャンセルで受信が中断されただけなので、エラーとして扱わない
+				return nil
+			}
+			w.d.Logger.ErrorContext(ctx, "receive deliveries failed", "error", err)
+			if !sleepCtx(ctx, receiveErrorBackoff) {
+				return nil
+			}
+			continue
+		}
+
+		// 処理中の分は SIGTERM で中断せず、結果の記録と Ack まで終える
+		handleCtx := context.WithoutCancel(ctx)
+		var wg sync.WaitGroup
+		for _, q := range batch {
+			wg.Go(func() { w.Handle(handleCtx, q) })
+		}
+		wg.Wait()
+	}
+	return nil
+}
+
+// sleepCtx は d だけ待つ。ctx が先に終わったら false を返す。
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // Handle は受け取った配信を 1 件処理する。処理を終えたら Ack し、終えられなければ Ack せずに残す。

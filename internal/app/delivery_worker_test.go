@@ -340,7 +340,7 @@ func TestHandle_DeliversWithSignature(t *testing.T) {
 	// 復号に 1 秒、送信に 2 秒かかる。送信を始めた時刻は復号の後
 	f.cipher.onDecrypt = func() { f.clock.Advance(time.Second) }
 	start := f.clock.Now().Add(time.Second)
-	f.sender.onSend = func() { f.clock.Advance(2 * time.Second) }
+	f.sender.onSend = func(context.Context, core.WebhookRequest) { f.clock.Advance(2 * time.Second) }
 	f.handle(t)
 
 	reqs := f.sender.Requests()

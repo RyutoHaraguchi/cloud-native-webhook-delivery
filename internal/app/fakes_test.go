@@ -319,7 +319,7 @@ type sentDelivery struct {
 }
 
 // fakeQueue は偽の DeliveryPublisher と DeliveryConsumer。
-// Receive は batches を先頭から 1 つずつ返し、尽きたら空を返す。
+// Receive は batches を先頭から 1 つずつ返す。尽きたらロングポーリングのように ctx の終わりまで待ち、ctx のエラーを返す。
 type fakeQueue struct {
 	rec *recorder
 
@@ -356,18 +356,21 @@ func (q *fakeQueue) SendToDLQ(_ context.Context, key core.DeliveryKey) error {
 	return nil
 }
 
-func (q *fakeQueue) Receive(_ context.Context, _ int) ([]core.QueuedDelivery, error) {
+func (q *fakeQueue) Receive(ctx context.Context, _ int) ([]core.QueuedDelivery, error) {
 	q.rec.record(callReceive)
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	if q.receiveErr != nil {
+		q.mu.Unlock()
 		return nil, q.receiveErr
 	}
 	if len(q.batches) == 0 {
-		return nil, nil
+		q.mu.Unlock()
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	b := q.batches[0]
 	q.batches = q.batches[1:]
+	q.mu.Unlock()
 	return b, nil
 }
 
@@ -400,25 +403,25 @@ func (q *fakeQueue) Acks() []string {
 	return slices.Clone(q.acks)
 }
 
-// fakeSender は偽の WebhookSender。onSend があれば送信中に呼ぶ（時計を進めるなど）。
+// fakeSender は偽の WebhookSender。onSend があれば送信中に、Send に渡った ctx とリクエストで呼ぶ（時計を進めるなど）。
 type fakeSender struct {
 	rec *recorder
 
 	mu       sync.Mutex
 	resp     core.WebhookResponse
 	err      error
-	onSend   func()
+	onSend   func(ctx context.Context, req core.WebhookRequest)
 	requests []core.WebhookRequest
 }
 
-func (s *fakeSender) Send(_ context.Context, req core.WebhookRequest) (core.WebhookResponse, error) {
+func (s *fakeSender) Send(ctx context.Context, req core.WebhookRequest) (core.WebhookResponse, error) {
 	s.rec.record(callWebhook)
 	s.mu.Lock()
 	s.requests = append(s.requests, req)
 	resp, err, onSend := s.resp, s.err, s.onSend
 	s.mu.Unlock()
 	if onSend != nil {
-		onSend()
+		onSend(ctx, req)
 	}
 	if err != nil {
 		return core.WebhookResponse{}, err
