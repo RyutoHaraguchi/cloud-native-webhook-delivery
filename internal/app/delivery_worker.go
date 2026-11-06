@@ -21,6 +21,10 @@ const receiveBatchSize = 10
 // receiveErrorBackoff は受信に失敗したとき、次の受信までに待つ時間。
 const receiveErrorBackoff = time.Second
 
+// handleTimeout は 1 件の処理全体の期限。SQS の可視性タイムアウト 90 秒より短くし、
+// 処理中に再受信されないようにする。送信自体の期限 30 秒はこの中に収まる
+const handleTimeout = 80 * time.Second
+
 // userAgent は送信するリクエストの User-Agent。
 const userAgent = "cloud-native-webhook-delivery"
 
@@ -59,6 +63,9 @@ type Deps struct {
 // DeliveryWorker はキューから受け取った配信を 1 件ずつ送信先へ送り、結果を記録する。
 type DeliveryWorker struct {
 	d Deps
+	// handleTimeout と receiveBackoff は定数の値で作る。テストだけが短く差し替える
+	handleTimeout  time.Duration
+	receiveBackoff time.Duration
 }
 
 // NewDeliveryWorker は DeliveryWorker を作る。Schedule 以外の部品が nil ならエラーを返す。
@@ -82,12 +89,13 @@ func NewDeliveryWorker(d Deps) (*DeliveryWorker, error) {
 			return nil, fmt.Errorf("new delivery worker: %s is nil", c.name)
 		}
 	}
-	return &DeliveryWorker{d: d}, nil
+	return &DeliveryWorker{d: d, handleTimeout: handleTimeout, receiveBackoff: receiveErrorBackoff}, nil
 }
 
 // Run は ctx がキャンセルされるまで、配信を受信して処理し続ける。
 // 1 回に受け取った分は並列に処理し、全部終えてから次を受信する。
 // ctx がキャンセルされたら新しい受信をやめ、処理中の分はキャンセルしない ctx で最後まで終えてから nil を返す。
+// 1 件の処理には handleTimeout の期限を付け、止まった I/O がバッチと終了を止め続けないようにする。
 func (w *DeliveryWorker) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		batch, err := w.d.Consumer.Receive(ctx, receiveBatchSize)
@@ -97,17 +105,21 @@ func (w *DeliveryWorker) Run(ctx context.Context) error {
 				return nil
 			}
 			w.d.Logger.ErrorContext(ctx, "receive deliveries failed", "error", err)
-			if !sleepCtx(ctx, receiveErrorBackoff) {
+			if !sleepCtx(ctx, w.receiveBackoff) {
 				return nil
 			}
 			continue
 		}
 
 		// 処理中の分は SIGTERM で中断せず、結果の記録と Ack まで終える
-		handleCtx := context.WithoutCancel(ctx)
+		base := context.WithoutCancel(ctx)
 		var wg sync.WaitGroup
 		for _, q := range batch {
-			wg.Go(func() { w.Handle(handleCtx, q) })
+			wg.Go(func() {
+				hctx, cancel := context.WithTimeout(base, w.handleTimeout)
+				defer cancel()
+				w.Handle(hctx, q)
+			})
 		}
 		wg.Wait()
 	}

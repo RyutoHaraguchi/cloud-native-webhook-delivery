@@ -73,15 +73,17 @@ type savedAttempt struct {
 type fakeMessages struct {
 	rec *recorder
 
-	mu              sync.Mutex
-	messages        map[[2]string]core.Message
-	deliveries      map[core.DeliveryKey]core.Delivery
-	getMessageErr   error
-	getDeliveryErr  error
-	saveDeliveryErr error
-	saveAttemptErr  error
-	savedDeliveries []savedDelivery
-	savedAttempts   []savedAttempt
+	mu             sync.Mutex
+	messages       map[[2]string]core.Message
+	deliveries     map[core.DeliveryKey]core.Delivery
+	getMessageErr  error
+	getDeliveryErr error
+	// blockGetDelivery なら GetDelivery は ctx が終わるまで待ち、ctx のエラーを返す（応答のない DynamoDB の代わり）
+	blockGetDelivery bool
+	saveDeliveryErr  error
+	saveAttemptErr   error
+	savedDeliveries  []savedDelivery
+	savedAttempts    []savedAttempt
 }
 
 func newFakeMessages(rec *recorder) *fakeMessages {
@@ -138,9 +140,14 @@ func (f *fakeMessages) CreateDelivery(_ context.Context, key core.DeliveryKey) e
 	return nil
 }
 
-func (f *fakeMessages) GetDelivery(_ context.Context, key core.DeliveryKey) (core.Delivery, error) {
+func (f *fakeMessages) GetDelivery(ctx context.Context, key core.DeliveryKey) (core.Delivery, error) {
 	f.rec.record(callGetDelivery)
 	f.mu.Lock()
+	if f.blockGetDelivery {
+		f.mu.Unlock()
+		<-ctx.Done()
+		return core.Delivery{}, ctx.Err()
+	}
 	defer f.mu.Unlock()
 	if f.getDeliveryErr != nil {
 		return core.Delivery{}, f.getDeliveryErr
@@ -319,7 +326,7 @@ type sentDelivery struct {
 }
 
 // fakeQueue は偽の DeliveryPublisher と DeliveryConsumer。
-// Receive は batches を先頭から 1 つずつ返す。尽きたらロングポーリングのように ctx の終わりまで待ち、ctx のエラーを返す。
+// Receive は onReceive があれば何回目の呼び出しかを渡して最初に呼び、batches を先頭から 1 つずつ返す。尽きたらロングポーリングのように ctx の終わりまで待ち、ctx のエラーを返す。
 type fakeQueue struct {
 	rec *recorder
 
@@ -328,6 +335,8 @@ type fakeQueue struct {
 	dlqErr     error
 	ackErr     error
 	receiveErr error
+	onReceive  func(call int)
+	receives   int
 	batches    [][]core.QueuedDelivery
 	sent       []sentDelivery
 	dlq        []core.DeliveryKey
@@ -358,6 +367,13 @@ func (q *fakeQueue) SendToDLQ(_ context.Context, key core.DeliveryKey) error {
 
 func (q *fakeQueue) Receive(ctx context.Context, _ int) ([]core.QueuedDelivery, error) {
 	q.rec.record(callReceive)
+	q.mu.Lock()
+	q.receives++
+	call, onReceive := q.receives, q.onReceive
+	q.mu.Unlock()
+	if onReceive != nil {
+		onReceive(call)
+	}
 	q.mu.Lock()
 	if q.receiveErr != nil {
 		q.mu.Unlock()

@@ -154,13 +154,17 @@ func TestRun_WaitsForBatchBeforeNextReceive(t *testing.T) {
 	}
 
 	done := startRun(t, func() error { return w.Run(ctx) }, cancel)
+	// 途中で失敗しても送信の goroutine を残さないよう、Run の後始末より先に解放する（Cleanup は後に登録したものから動く）
+	var releaseOnce sync.Once
+	releaseFirst := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFirst)
 	waitSignal(t, entered, "1 回目の送信")
 	// 1 件目が終わらないうちに次の受信が呼ばれないことを、少し待って確かめる
 	time.Sleep(50 * time.Millisecond)
 	if got := f.rec.Count(callReceive); got != 1 {
 		t.Errorf("1 回目の処理中に受信 %d 回, want 1", got)
 	}
-	close(release)
+	releaseFirst()
 	waitSignal(t, secondSent, "2 回目の送信")
 
 	cancel()
@@ -222,20 +226,70 @@ func TestRun_ReceiveErrorBacksOff(t *testing.T) {
 
 	w := f.worker(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-	start := time.Now()
 	done := startRun(t, func() error { return w.Run(ctx) }, cancel)
 	waitRun(t, done)
-	elapsed := time.Since(start)
-
-	// 2 回目の受信の後の待ち（2 秒まで）を、ctx の期限（1.5 秒）で抜ける
-	if elapsed >= 1950*time.Millisecond {
-		t.Errorf("Run が戻るまで %v。ctx の期限で待ちを抜けていない", elapsed)
-	}
 	got := f.rec.Count(callReceive)
 	if got < 1 || got > 3 {
 		t.Errorf("1.5 秒で受信 %d 回, want 1〜3 回", got)
 	}
 	if n := f.countLogs(t, "ERROR"); n < 1 {
 		t.Errorf("受信エラーのログ %d 件, want 1 件以上", n)
+	}
+}
+
+func TestRun_ReceiveErrorBackoffEndsOnCancel(t *testing.T) {
+	f := newFixture()
+	f.queue.receiveErr = errTemp
+
+	w := f.worker(t)
+	// 待ちを十分長くし、Run が戻ったことだけで待ちを ctx で抜けたと分かるようにする
+	w.receiveBackoff = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	firstReceive := make(chan struct{})
+	f.queue.onReceive = func(call int) {
+		if call == 1 {
+			close(firstReceive)
+		}
+	}
+
+	done := startRun(t, func() error { return w.Run(ctx) }, cancel)
+	waitSignal(t, firstReceive, "1 回目の受信")
+	// 受信はエラーを返し、Run は待ちに入る（入る前でも後でも、キャンセル済みの ctx で抜ける）
+	cancel()
+	waitRun(t, done)
+
+	if got := f.rec.Count(callReceive); got != 1 {
+		t.Errorf("受信 %d 回, want 1", got)
+	}
+}
+
+func TestRun_HandleTimesOutOnHungCall(t *testing.T) {
+	f := newFixture()
+	batch := f.addDeliveries(1, "h")
+	f.queue.batches = [][]core.QueuedDelivery{batch}
+	// 応答のない GetDelivery を、1 件の処理の期限で打ち切る
+	f.messages.blockGetDelivery = true
+
+	w := f.worker(t)
+	w.handleTimeout = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	secondReceive := make(chan struct{})
+	f.queue.onReceive = func(call int) {
+		if call == 2 {
+			close(secondReceive)
+		}
+	}
+
+	done := startRun(t, func() error { return w.Run(ctx) }, cancel)
+	// 2 回目の受信が呼ばれたら、1 回目のバッチは期限で終わっている
+	waitSignal(t, secondReceive, "2 回目の受信")
+	cancel()
+	waitRun(t, done)
+
+	if got := f.queue.Acks(); len(got) != 0 {
+		t.Errorf("Ack = %v, want なし（期限切れは残す）", got)
+	}
+	if got := f.rec.Count(callGetDelivery); got != 1 {
+		t.Errorf("GetDelivery %d 回, want 1", got)
 	}
 }
