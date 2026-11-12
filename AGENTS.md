@@ -4,12 +4,14 @@
 
 ## 現在の状態
 
-実装中。`internal/core` と `internal/adapters/aws`（DynamoDB と SQS のアダプタ）、`internal/adapters/local`（ローカル用の SecretCipher）まで実装済み。`cmd` でアダプタを配線しているのは、config テーブルにエンドポイントを書くローカル用のシード（`cmd/local-seed`）だけ。以下のコマンドと構成には予定のものを含むので、該当ファイルが存在するか確認してから使う。
+実装中。`internal/core`、`internal/adapters/aws`（DynamoDB と SQS のアダプタ）、`internal/adapters/local`（ローカル用の SecretCipher）、`internal/adapters/httpsender`（SSRF 検査済みの送信）、`internal/app`（配信ワーカーの処理）まで実装済み。`cmd` でアダプタを配線しているのは、配信ワーカー（`cmd/delivery-worker`）と、config テーブルにエンドポイントを書くローカル用のシード（`cmd/local-seed`）。以下のコマンドと構成には予定のものを含むので、該当ファイルが存在するか確認してから使う。
 
 ## 構成
 
 - `cmd/`: `ingest-api`、`management-api`、`authorizer`、`enqueuer`、`delivery-worker`、`dummy-receiver`、`local-seed`
+- `internal/app`: core のポートを組み合わせるユースケース（配信ワーカー、復号結果のキャッシュ）
 - `internal/adapters/local`: ローカル開発用の実装（AES-256-GCM の SecretCipher）
+- `internal/adapters/httpsender`: SSRF 検査済みの接続で Webhook を送る（クラウド非依存）
 - `internal/core`: クラウド非依存のドメインロジック
 - `internal/adapters/aws`: AWS SDK を使う実装
 - `scripts/`: テナント作成や DLQ の再処理など、運営者用のコマンド
@@ -21,7 +23,7 @@
 go build ./...
 golangci-lint run
 go test ./...                       # ユニットテスト
-docker compose up -d                # DynamoDB Local、ElasticMQ、dummy-receiver。起動のたびにシードを書く
+docker compose up -d --build        # DynamoDB Local、ElasticMQ、dummy-receiver、delivery-worker。起動のたびにシードを書く
 go test -tags=integration ./...
 terraform -chdir=infra/aws/envs/dev plan
 ```

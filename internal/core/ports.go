@@ -75,3 +75,22 @@ type DeliveryConsumer interface {
 	// Ack は受け取った配信をキューから消す。receipt には QueuedDelivery.Receipt を渡す。
 	Ack(ctx context.Context, receipt string) error
 }
+
+// WebhookRequest は送信先へ 1 回送るリクエストを表す。
+type WebhookRequest struct {
+	URL     string
+	Headers map[string]string
+	Body    []byte
+}
+
+// WebhookResponse は送信先からの応答を表す。
+type WebhookResponse struct {
+	StatusCode int
+	RetryAfter string // Retry-After ヘッダーの値。なければ空
+}
+
+// WebhookSender は SSRF 検査を通して 1 回送る。応答があればステータスに関係なく nil エラーで返す。
+// 検査で止めたら ErrSSRFBlocked、タイムアウト、DNS の失敗、接続失敗はそれ以外のエラーを返す。
+type WebhookSender interface {
+	Send(ctx context.Context, req WebhookRequest) (WebhookResponse, error)
+}
